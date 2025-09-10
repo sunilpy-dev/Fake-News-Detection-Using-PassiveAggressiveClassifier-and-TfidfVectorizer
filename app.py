@@ -25,7 +25,7 @@ from newspaper import Article, Config
 # from urllib import request, urlopen, URLError, parse
 import urllib
 from newsapi import NewsApiClient 
-newsapi=NewsApiClient(api_key='2aa3ac1960ca48b2a5260ebe34c37e96')
+newsapi=NewsApiClient(api_key='ac538e72fbd64cdda84b351124413c1d')
 
 secret = secrets.token_urlsafe(32)
 
@@ -55,6 +55,11 @@ mysql = MySQL(app)
 # @app.before_first_request
 # def create_table():
 #     db.create_all()
+
+# Load vectorizer and classifier
+vectorizer = pickle.load(open("TfidfVectorizer-new.sav", "rb"))
+classifier = pickle.load(open("ClassifierModel-new.sav", "rb"))
+
 
 @app.route('/', methods=['GET', 'POST'])
 def main():
@@ -184,69 +189,65 @@ def history():
     
 
 #Receiving the input url from the user and using Web Scrapping to extract the news content
-@app.route('/predict',methods=['GET','POST'])
+@app.route('/predict', methods=['GET', 'POST'])
 def predict():
     url = request.get_data(as_text=True)[5:]
     url = urllib.parse.unquote(url)
 
-    validate = validators.url(url)
+    # Validate URL
+    if not validators.url(url):
+        flash('Please enter a valid news site URL', 'danger')
+        return redirect(url_for('main'))
 
-    if validate == True:
-        user_agent = request.headers.get('User-Agent')
-        config = Config()
-        config.browser_user_agent = user_agent
+    user_agent = request.headers.get('User-Agent')
+    config = Config()
+    config.browser_user_agent = user_agent
 
-        try:
-            article = Article(str(url))
-            article.download()
-            article.parse()
-            parsed = article.text
+    try:
+        article = Article(str(url), config=config)
+        article.download()
+        article.parse()
+        parsed = article.text
 
-            if parsed:
-                
-                b = TextBlob(parsed)
-                lang = b.detect_language()
-
-                if lang == "en":
-                    article.nlp()
-                    news_title = article.title
-                    news = article.text
-                    news_html = article.html
-
-                    if news:
-                        news_to_predict = pd.Series(np.array([news]))
-
-                        cleaner = pickle.load(open('TfidfVectorizer-new.sav', 'rb'))
-                        model = pickle.load(open('ClassifierModel-new.sav', 'rb'))
-
-                        cleaned_text = cleaner.transform(news_to_predict)
-                        pred = model.predict(cleaned_text)
-                        pred_outcome = format(pred[0])
-                        if (pred_outcome == "0"):
-                            outcome = "True"
-                        else:
-                            if (pred_outcome == "REAL"):
-                                outcome = "True"
-                            else:
-                                outcome = "False"
-
-                        if 'logged_in' in session:
-                            userID = session['id']
-                            saveHistory(userID, url, outcome)
-                        
-                        return render_template('predict.html', prediction_text=outcome, url_input=url, news=news)
-                    else:
-                        flash('Invalid URL! Please try again', 'danger')
-                        return redirect(url_for('main'))
-                else:
-                    language_error = "We currently do not support this language"
-                    return render_template('predict.html', language_error=language_error, url_input=url)
-            else:
-                flash('Invalid news article! Please try again', 'danger')
-                return redirect(url_for('main'))
-        except newspaper.article.ArticleException:
-            flash('We currently do not support this website! Please try again', 'danger')
+        if not parsed:
+            flash('Invalid news article! Please try again', 'danger')
             return redirect(url_for('main'))
+
+        # We only support English
+        lang = 'en'
+        if lang != "en":
+            language_error = "We currently do not support this language"
+            return render_template('predict.html', language_error=language_error, url_input=url)
+
+        article.nlp()
+        news = article.text
+
+        if not news:
+            flash('Invalid URL! Please try again', 'danger')
+            return redirect(url_for('main'))
+
+        # Use already loaded vectorizer & classifier (no reloading here!)
+        cleaned_text = vectorizer.transform([news])  # must pass list
+        pred = classifier.predict(cleaned_text)
+        pred_outcome = str(pred[0])
+
+        # Normalize prediction output
+        if pred_outcome.lower() in ["real", "1"]:
+            outcome = "True"
+        else:
+            outcome = "False"
+
+        # Save history if user logged in
+        if 'logged_in' in session:
+            userID = session['id']
+            saveHistory(userID, url, outcome)
+
+        return render_template('predict.html', prediction_text=outcome, url_input=url, news=news)
+
+    except newspaper.article.ArticleException:
+        flash('We currently do not support this website! Please try again', 'danger')
+        return redirect(url_for('main'))
+
         
     else:
         flash('Please enter a valid news stie URL', 'danger')
